@@ -1,3 +1,3 @@
-module github.com/engie/tailpod-mint-key
+module github.com/engie/tailmint
 
 go 1.22
