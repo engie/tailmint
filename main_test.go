@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMintKeySuccess(t *testing.T) {
@@ -383,5 +384,85 @@ func TestDropPrivilegesRootWithoutSudo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bare root") {
 		t.Errorf("error should mention bare root: %v", err)
+	}
+}
+
+func TestOAuthTokenTimeout(t *testing.T) {
+	// Server that hangs longer than the client timeout
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		json.NewEncoder(w).Encode(tokenResponse{AccessToken: "too-late"})
+	}))
+	defer tokenServer.Close()
+
+	origTokenURL := oauthTokenURL
+	origClient := httpClient
+	oauthTokenURL = tokenServer.URL
+	httpClient = &http.Client{Timeout: 100 * time.Millisecond}
+	defer func() {
+		oauthTokenURL = origTokenURL
+		httpClient = origClient
+	}()
+
+	cfg := config{
+		ClientID:     "test-id",
+		ClientSecret: "test-secret",
+		Tailnet:      "-",
+	}
+
+	_, err := mintKey(cfg, "tag:test", "test")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// net/http wraps timeout errors; check for context deadline or timeout indication
+	errStr := err.Error()
+	if !strings.Contains(errStr, "deadline exceeded") &&
+		!strings.Contains(errStr, "Timeout") &&
+		!strings.Contains(errStr, "timeout") {
+		t.Errorf("error should indicate timeout, got: %v", err)
+	}
+}
+
+func TestCreateKeyTimeout(t *testing.T) {
+	// Token endpoint responds quickly
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token"})
+	}))
+	defer tokenServer.Close()
+
+	// Key endpoint hangs
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		json.NewEncoder(w).Encode(keyResponse{Key: "too-late"})
+	}))
+	defer keyServer.Close()
+
+	origTokenURL := oauthTokenURL
+	origKeyURL := createKeyURL
+	origClient := httpClient
+	oauthTokenURL = tokenServer.URL
+	createKeyURL = func(tailnet string) string { return keyServer.URL }
+	httpClient = &http.Client{Timeout: 100 * time.Millisecond}
+	defer func() {
+		oauthTokenURL = origTokenURL
+		createKeyURL = origKeyURL
+		httpClient = origClient
+	}()
+
+	cfg := config{
+		ClientID:     "test-id",
+		ClientSecret: "test-secret",
+		Tailnet:      "-",
+	}
+
+	_, err := mintKey(cfg, "tag:test", "test")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "deadline exceeded") &&
+		!strings.Contains(errStr, "Timeout") &&
+		!strings.Contains(errStr, "timeout") {
+		t.Errorf("error should indicate timeout, got: %v", err)
 	}
 }

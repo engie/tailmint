@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type config struct {
@@ -60,7 +61,7 @@ var (
 	createKeyURL  = func(tailnet string) string {
 		return fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/keys", tailnet)
 	}
-	httpClient   = &http.Client{}
+	httpClient   = &http.Client{Timeout: 30 * time.Second}
 	sysSetuid    = syscall.Setuid
 	sysSetgid    = syscall.Setgid
 	sysSetgroups = syscall.Setgroups
