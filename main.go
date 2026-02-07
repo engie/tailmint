@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type config struct {
@@ -58,7 +60,12 @@ var (
 	createKeyURL  = func(tailnet string) string {
 		return fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/keys", tailnet)
 	}
-	httpClient = &http.Client{}
+	httpClient   = &http.Client{}
+	sysSetuid    = syscall.Setuid
+	sysSetgid    = syscall.Setgid
+	sysSetgroups = syscall.Setgroups
+	osGetuid     = os.Getuid
+	userLookupId = user.LookupId
 )
 
 func main() {
@@ -79,6 +86,11 @@ func main() {
 
 	cfg, err := loadConfig(*configFile)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := dropPrivileges(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -151,6 +163,58 @@ func parseEnvFile(data string) map[string]string {
 		}
 	}
 	return env
+}
+
+func dropPrivileges() error {
+	if osGetuid() != 0 {
+		return nil // not root, nothing to do
+	}
+
+	uidStr := os.Getenv("SUDO_UID")
+	gidStr := os.Getenv("SUDO_GID")
+	if uidStr == "" || gidStr == "" {
+		return fmt.Errorf("running as root without SUDO_UID/SUDO_GID; refusing to continue as bare root")
+	}
+
+	uid, err := strconv.Atoi(uidStr)
+	if err != nil {
+		return fmt.Errorf("invalid SUDO_UID %q: %w", uidStr, err)
+	}
+	gid, err := strconv.Atoi(gidStr)
+	if err != nil {
+		return fmt.Errorf("invalid SUDO_GID %q: %w", gidStr, err)
+	}
+
+	// Look up supplementary groups for the user
+	var gids []int
+	u, err := userLookupId(uidStr)
+	if err == nil {
+		groupIDs, err := u.GroupIds()
+		if err == nil {
+			for _, g := range groupIDs {
+				if id, err := strconv.Atoi(g); err == nil {
+					gids = append(gids, id)
+				}
+			}
+		}
+	}
+	// If lookup failed, fall back to just the primary GID
+	if len(gids) == 0 {
+		gids = []int{gid}
+	}
+
+	// Order matters: setgroups before setgid before setuid
+	if err := sysSetgroups(gids); err != nil {
+		return fmt.Errorf("setgroups: %w", err)
+	}
+	if err := sysSetgid(gid); err != nil {
+		return fmt.Errorf("setgid(%d): %w", gid, err)
+	}
+	if err := sysSetuid(uid); err != nil {
+		return fmt.Errorf("setuid(%d): %w", uid, err)
+	}
+
+	return nil
 }
 
 func mintKey(cfg config, tag, hostname string) (string, error) {
@@ -275,9 +339,6 @@ func writeOutput(path, authKey, hostname string) error {
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 
-	// Chown to SUDO_UID/SUDO_GID if running under sudo
-	chownIfSudo(tmpPath)
-
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("renaming temp file: %w", err)
@@ -286,19 +347,3 @@ func writeOutput(path, authKey, hostname string) error {
 	return nil
 }
 
-func chownIfSudo(path string) {
-	uidStr := os.Getenv("SUDO_UID")
-	gidStr := os.Getenv("SUDO_GID")
-	if uidStr == "" || gidStr == "" {
-		return
-	}
-	uid, err := strconv.Atoi(uidStr)
-	if err != nil {
-		return
-	}
-	gid, err := strconv.Atoi(gidStr)
-	if err != nil {
-		return
-	}
-	os.Chown(path, uid, gid)
-}

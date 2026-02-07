@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -226,5 +228,160 @@ func TestLoadConfigMissingID(t *testing.T) {
 	_, err := loadConfig(cfgPath)
 	if err == nil {
 		t.Fatal("expected error for missing client ID")
+	}
+}
+
+func TestDropPrivilegesUnderSudo(t *testing.T) {
+	// Save and restore all overridable vars
+	origGetuid := osGetuid
+	origSetuid := sysSetuid
+	origSetgid := sysSetgid
+	origSetgroups := sysSetgroups
+	origLookupId := userLookupId
+	defer func() {
+		osGetuid = origGetuid
+		sysSetuid = origSetuid
+		sysSetgid = origSetgid
+		sysSetgroups = origSetgroups
+		userLookupId = origLookupId
+	}()
+
+	// Record syscall invocations in order
+	type call struct {
+		name string
+		args interface{}
+	}
+	var calls []call
+
+	osGetuid = func() int { return 0 }
+	sysSetgroups = func(gids []int) error {
+		calls = append(calls, call{"setgroups", gids})
+		return nil
+	}
+	sysSetgid = func(gid int) error {
+		calls = append(calls, call{"setgid", gid})
+		return nil
+	}
+	sysSetuid = func(uid int) error {
+		calls = append(calls, call{"setuid", uid})
+		return nil
+	}
+	userLookupId = func(uid string) (*user.User, error) {
+		return nil, fmt.Errorf("user not found") // force fallback to primary GID
+	}
+
+	t.Setenv("SUDO_UID", "1000")
+	t.Setenv("SUDO_GID", "1000")
+
+	err := dropPrivileges()
+	if err != nil {
+		t.Fatalf("dropPrivileges error: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 syscalls, got %d: %v", len(calls), calls)
+	}
+	if calls[0].name != "setgroups" {
+		t.Errorf("first call should be setgroups, got %s", calls[0].name)
+	}
+	if gids := calls[0].args.([]int); len(gids) != 1 || gids[0] != 1000 {
+		t.Errorf("setgroups args: %v", gids)
+	}
+	if calls[1].name != "setgid" || calls[1].args.(int) != 1000 {
+		t.Errorf("second call should be setgid(1000), got %s(%v)", calls[1].name, calls[1].args)
+	}
+	if calls[2].name != "setuid" || calls[2].args.(int) != 1000 {
+		t.Errorf("third call should be setuid(1000), got %s(%v)", calls[2].name, calls[2].args)
+	}
+}
+
+func TestDropPrivilegesWithSupplementaryGroups(t *testing.T) {
+	origGetuid := osGetuid
+	origSetuid := sysSetuid
+	origSetgid := sysSetgid
+	origSetgroups := sysSetgroups
+	origLookupId := userLookupId
+	defer func() {
+		osGetuid = origGetuid
+		sysSetuid = origSetuid
+		sysSetgid = origSetgid
+		sysSetgroups = origSetgroups
+		userLookupId = origLookupId
+	}()
+
+	var gotGids []int
+
+	osGetuid = func() int { return 0 }
+	sysSetgroups = func(gids []int) error {
+		gotGids = gids
+		return nil
+	}
+	sysSetgid = func(gid int) error { return nil }
+	sysSetuid = func(uid int) error { return nil }
+	userLookupId = func(uid string) (*user.User, error) {
+		return &user.User{
+			Uid:      "1000",
+			Gid:      "1000",
+			Username: "testuser",
+		}, nil
+	}
+
+	t.Setenv("SUDO_UID", "1000")
+	t.Setenv("SUDO_GID", "1000")
+
+	err := dropPrivileges()
+	if err != nil {
+		t.Fatalf("dropPrivileges error: %v", err)
+	}
+
+	// user.User.GroupIds() reads /etc/group; in test the mock user won't have
+	// real group entries, so it will fall back to the primary GID
+	if len(gotGids) == 0 {
+		t.Fatal("setgroups was not called")
+	}
+}
+
+func TestDropPrivilegesNotRoot(t *testing.T) {
+	origGetuid := osGetuid
+	origSetuid := sysSetuid
+	origSetgid := sysSetgid
+	origSetgroups := sysSetgroups
+	defer func() {
+		osGetuid = origGetuid
+		sysSetuid = origSetuid
+		sysSetgid = origSetgid
+		sysSetgroups = origSetgroups
+	}()
+
+	called := false
+	osGetuid = func() int { return 1000 } // not root
+	sysSetgroups = func(gids []int) error { called = true; return nil }
+	sysSetgid = func(gid int) error { called = true; return nil }
+	sysSetuid = func(uid int) error { called = true; return nil }
+
+	err := dropPrivileges()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Error("syscalls should not be made when not running as root")
+	}
+}
+
+func TestDropPrivilegesRootWithoutSudo(t *testing.T) {
+	origGetuid := osGetuid
+	defer func() { osGetuid = origGetuid }()
+
+	osGetuid = func() int { return 0 }
+
+	t.Setenv("SUDO_UID", "")
+	t.Setenv("SUDO_GID", "")
+
+	err := dropPrivileges()
+	if err == nil {
+		t.Fatal("expected error when running as bare root")
+	}
+	if !strings.Contains(err.Error(), "bare root") {
+		t.Errorf("error should mention bare root: %v", err)
 	}
 }
