@@ -194,6 +194,86 @@ func TestWriteOutputNoHostname(t *testing.T) {
 	}
 }
 
+func TestParseEnvFileQuotedValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  map[string]string
+	}{
+		{
+			name:  "double quoted",
+			input: `KEY="hello world"`,
+			want:  map[string]string{"KEY": "hello world"},
+		},
+		{
+			name:  "single quoted",
+			input: `KEY='hello world'`,
+			want:  map[string]string{"KEY": "hello world"},
+		},
+		{
+			name:  "unquoted",
+			input: `KEY=hello`,
+			want:  map[string]string{"KEY": "hello"},
+		},
+		{
+			name:  "mismatched quotes left as-is",
+			input: `KEY="hello'`,
+			want:  map[string]string{"KEY": `"hello'`},
+		},
+		{
+			name:  "empty quoted value",
+			input: `KEY=""`,
+			want:  map[string]string{"KEY": ""},
+		},
+		{
+			name:  "quotes in middle not stripped",
+			input: `KEY=he"ll"o`,
+			want:  map[string]string{"KEY": `he"ll"o`},
+		},
+		{
+			name:  "multiple keys with mixed quoting",
+			input: "A=\"one\"\nB='two'\nC=three\n",
+			want:  map[string]string{"A": "one", "B": "two", "C": "three"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseEnvFile(tt.input)
+			for k, wantV := range tt.want {
+				if gotV, ok := got[k]; !ok {
+					t.Errorf("missing key %q", k)
+				} else if gotV != wantV {
+					t.Errorf("key %q: got %q, want %q", k, gotV, wantV)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigQuotedValues(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "oauth.env")
+	os.WriteFile(cfgPath, []byte(`TS_API_CLIENT_ID="myid"
+TS_API_CLIENT_SECRET='mysecret'
+TS_TAILNET="example.com"
+`), 0600)
+
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfig error: %v", err)
+	}
+	if cfg.ClientID != "myid" {
+		t.Errorf("unexpected ClientID: %q", cfg.ClientID)
+	}
+	if cfg.ClientSecret != "mysecret" {
+		t.Errorf("unexpected ClientSecret: %q", cfg.ClientSecret)
+	}
+	if cfg.Tailnet != "example.com" {
+		t.Errorf("unexpected Tailnet: %q", cfg.Tailnet)
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "oauth.env")

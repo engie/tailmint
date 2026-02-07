@@ -160,10 +160,20 @@ func parseEnvFile(data string) map[string]string {
 			continue
 		}
 		if idx := strings.Index(line, "="); idx >= 0 {
-			env[strings.TrimSpace(line[:idx])] = strings.TrimSpace(line[idx+1:])
+			val := strings.TrimSpace(line[idx+1:])
+			val = unquote(val)
+			env[strings.TrimSpace(line[:idx])] = val
 		}
 	}
 	return env
+}
+
+// unquote strips matching single or double quotes from a value.
+func unquote(s string) string {
+	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 func dropPrivileges() error {
