@@ -467,6 +467,80 @@ func TestDropPrivilegesRootWithoutSudo(t *testing.T) {
 	}
 }
 
+func TestGetAccessTokenReadError(t *testing.T) {
+	// Server claims a large body via Content-Length but sends nothing, causing io.ReadAll to fail
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "9999")
+		w.WriteHeader(http.StatusOK)
+		// Close without writing the promised body
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+		}
+	}))
+	defer tokenServer.Close()
+
+	origTokenURL := oauthTokenURL
+	oauthTokenURL = tokenServer.URL
+	defer func() { oauthTokenURL = origTokenURL }()
+
+	cfg := config{
+		ClientID:     "test-id",
+		ClientSecret: "test-secret",
+		Tailnet:      "-",
+	}
+
+	_, err := getAccessToken(cfg)
+	if err == nil {
+		t.Fatal("expected error from read failure")
+	}
+	if !strings.Contains(err.Error(), "reading OAuth token response") {
+		t.Errorf("error should mention reading response, got: %v", err)
+	}
+}
+
+func TestMintKeyCreateKeyReadError(t *testing.T) {
+	// Token endpoint works fine
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(tokenResponse{AccessToken: "test-token"})
+	}))
+	defer tokenServer.Close()
+
+	// Key endpoint claims large body but closes connection
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "9999")
+		w.WriteHeader(http.StatusOK)
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+		}
+	}))
+	defer keyServer.Close()
+
+	origTokenURL := oauthTokenURL
+	origKeyURL := createKeyURL
+	oauthTokenURL = tokenServer.URL
+	createKeyURL = func(tailnet string) string { return keyServer.URL }
+	defer func() {
+		oauthTokenURL = origTokenURL
+		createKeyURL = origKeyURL
+	}()
+
+	cfg := config{
+		ClientID:     "test-id",
+		ClientSecret: "test-secret",
+		Tailnet:      "-",
+	}
+
+	_, err := mintKey(cfg, "tag:test", "test")
+	if err == nil {
+		t.Fatal("expected error from read failure")
+	}
+	if !strings.Contains(err.Error(), "reading create key response") {
+		t.Errorf("error should mention reading response, got: %v", err)
+	}
+}
+
 func TestOAuthTokenTimeout(t *testing.T) {
 	// Server that hangs longer than the client timeout
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

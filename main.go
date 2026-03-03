@@ -274,9 +274,12 @@ func mintKey(cfg config, tag, hostname string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("create key API returned %d: %s", resp.StatusCode, body)
+	}
+	if readErr != nil {
+		return "", fmt.Errorf("reading create key response: %w", readErr)
 	}
 
 	var keyResp keyResponse
@@ -302,9 +305,12 @@ func getAccessToken(cfg config) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("OAuth token API returned %d: %s", resp.StatusCode, body)
+	}
+	if readErr != nil {
+		return "", fmt.Errorf("reading OAuth token response: %w", readErr)
 	}
 
 	var tokenResp tokenResponse
