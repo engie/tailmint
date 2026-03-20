@@ -91,6 +91,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := validateHostname(*hostname); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
+
 	if err := dropPrivileges(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -324,7 +329,72 @@ func getAccessToken(cfg config) (string, error) {
 	return tokenResp.AccessToken, nil
 }
 
+// validateHostname rejects hostnames that could inject extra lines into the
+// output env file or abuse the sudoers wildcard on -hostname *. Only allows
+// characters valid in DNS labels: alphanumeric plus hyphens.
+func validateHostname(h string) error {
+	if h == "" {
+		return nil // hostname is optional
+	}
+	for _, c := range h {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+			return fmt.Errorf("hostname contains invalid character %q: %s", c, h)
+		}
+	}
+	if h[0] == '-' || h[len(h)-1] == '-' {
+		return fmt.Errorf("hostname must not start or end with a hyphen: %s", h)
+	}
+	return nil
+}
+
+// validateOutputPath applies maximally paranoid validation on the output path.
+// sudoers glob wildcards match "/" so they can't prevent path traversal on their
+// own (e.g. /run/user/../../etc/shadow.env would match the sudoers pattern).
+// This function is the precise inner check; the sudoers rule is the coarse outer fence.
+func validateOutputPath(path string) error {
+	// Check for ".." before Clean, since Clean resolves traversals away
+	// in absolute paths, which would hide the attack.
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if part == ".." {
+			return fmt.Errorf("output path must not contain '..': %s", path)
+		}
+	}
+
+	cleaned := filepath.Clean(path)
+
+	// Must be absolute
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("output path must be absolute: %s", path)
+	}
+
+	// Must live under /run/user/<numeric-uid>/ts-authkeys/ and end in .env
+	parts := strings.Split(cleaned, string(filepath.Separator))
+	// cleaned absolute path splits as: ["", "run", "user", "<uid>", "ts-authkeys", "<name>.env"]
+	if len(parts) != 6 ||
+		parts[1] != "run" ||
+		parts[2] != "user" ||
+		parts[4] != "ts-authkeys" {
+		return fmt.Errorf("output path must match /run/user/<uid>/ts-authkeys/<name>.env: %s", path)
+	}
+
+	// UID component must be numeric
+	if _, err := strconv.Atoi(parts[3]); err != nil {
+		return fmt.Errorf("output path UID component must be numeric: %s", parts[3])
+	}
+
+	// Filename must end in .env and contain no further path separators (Clean already handled that)
+	if !strings.HasSuffix(parts[5], ".env") {
+		return fmt.Errorf("output path must end in .env: %s", path)
+	}
+
+	return nil
+}
+
 func writeOutput(path, authKey, hostname string) error {
+	if err := validateOutputPath(path); err != nil {
+		return err
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)

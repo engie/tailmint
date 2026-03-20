@@ -144,13 +144,13 @@ func TestMintKeyAPIError(t *testing.T) {
 }
 
 func TestWriteOutput(t *testing.T) {
-	dir := t.TempDir()
-	outPath := filepath.Join(dir, "sub", "test.env")
+	outPath := fmt.Sprintf("/run/user/%d/ts-authkeys/nginx-demo.env", os.Getuid())
 
 	err := writeOutput(outPath, "tskey-test123", "nginx-demo")
 	if err != nil {
 		t.Fatalf("writeOutput error: %v", err)
 	}
+	defer os.Remove(outPath)
 
 	data, err := os.ReadFile(outPath)
 	if err != nil {
@@ -172,13 +172,13 @@ func TestWriteOutput(t *testing.T) {
 }
 
 func TestWriteOutputNoHostname(t *testing.T) {
-	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.env")
+	outPath := fmt.Sprintf("/run/user/%d/ts-authkeys/test.env", os.Getuid())
 
 	err := writeOutput(outPath, "tskey-test123", "")
 	if err != nil {
 		t.Fatalf("writeOutput error: %v", err)
 	}
+	defer os.Remove(outPath)
 
 	data, err := os.ReadFile(outPath)
 	if err != nil {
@@ -191,6 +191,119 @@ func TestWriteOutputNoHostname(t *testing.T) {
 	}
 	if strings.Contains(content, "TS_HOSTNAME") {
 		t.Error("output should not contain TS_HOSTNAME when not provided")
+	}
+}
+
+func TestValidateHostname(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr string
+	}{
+		{name: "valid simple", host: "nginx-demo"},
+		{name: "valid with numbers", host: "web01"},
+		{name: "valid uppercase", host: "MyHost"},
+		{name: "empty is ok", host: ""},
+		{name: "newline injection", host: "foo\nTS_AUTHKEY=evil", wantErr: "invalid character"},
+		{name: "space", host: "foo bar", wantErr: "invalid character"},
+		{name: "slash", host: "foo/bar", wantErr: "invalid character"},
+		{name: "equals", host: "foo=bar", wantErr: "invalid character"},
+		{name: "starts with hyphen", host: "-foo", wantErr: "must not start or end with a hyphen"},
+		{name: "ends with hyphen", host: "foo-", wantErr: "must not start or end with a hyphen"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateHostname(tt.host)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateOutputPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{
+			name: "valid path",
+			path: "/run/user/1000/ts-authkeys/nginx-demo.env",
+		},
+		{
+			name:    "path traversal in uid",
+			path:    "/run/user/../../etc/shadow.env",
+			wantErr: "must not contain '..'",
+		},
+		{
+			name:    "path traversal in filename",
+			path:    "/run/user/1000/ts-authkeys/../../../etc/shadow.env",
+			wantErr: "must not contain '..'",
+		},
+		{
+			name:    "relative path",
+			path:    "run/user/1000/ts-authkeys/test.env",
+			wantErr: "must be absolute",
+		},
+		{
+			name:    "wrong prefix",
+			path:    "/tmp/ts-authkeys/test.env",
+			wantErr: "must match",
+		},
+		{
+			name:    "non-numeric uid",
+			path:    "/run/user/evil/ts-authkeys/test.env",
+			wantErr: "must be numeric",
+		},
+		{
+			name:    "wrong extension",
+			path:    "/run/user/1000/ts-authkeys/test.sh",
+			wantErr: "must end in .env",
+		},
+		{
+			name:    "extra depth",
+			path:    "/run/user/1000/ts-authkeys/sub/test.env",
+			wantErr: "must match",
+		},
+		{
+			name:    "missing ts-authkeys",
+			path:    "/run/user/1000/other/test.env",
+			wantErr: "must match",
+		},
+		{
+			name:    "just /run/user",
+			path:    "/run/user/test.env",
+			wantErr: "must match",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOutputPath(tt.path)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 
