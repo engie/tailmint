@@ -72,7 +72,7 @@ func TestMintKeySuccess(t *testing.T) {
 		Preauthorized: true,
 	}
 
-	key, err := mintKey(cfg, "tag:tailpod", "nginx-demo")
+	key, err := mintKey(cfg, "tag:tailpod", Hostname("nginx-demo"))
 	if err != nil {
 		t.Fatalf("mintKey error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMintKeyOAuthError(t *testing.T) {
 		Tailnet:      "-",
 	}
 
-	_, err := mintKey(cfg, "tag:tailpod", "test")
+	_, err := mintKey(cfg, "tag:tailpod", Hostname("test"))
 	if err == nil {
 		t.Fatal("expected error for OAuth failure")
 	}
@@ -134,7 +134,7 @@ func TestMintKeyAPIError(t *testing.T) {
 		Tailnet:      "-",
 	}
 
-	_, err := mintKey(cfg, "tag:wrong", "test")
+	_, err := mintKey(cfg, "tag:wrong", Hostname("test"))
 	if err == nil {
 		t.Fatal("expected error for API failure")
 	}
@@ -144,15 +144,15 @@ func TestMintKeyAPIError(t *testing.T) {
 }
 
 func TestWriteOutput(t *testing.T) {
-	outPath := fmt.Sprintf("/run/user/%d/ts-authkeys/nginx-demo.env", os.Getuid())
+	outPath := OutputPath(fmt.Sprintf("/run/user/%d/ts-authkeys/nginx-demo.env", os.Getuid()))
 
-	err := writeOutput(outPath, "tskey-test123", "nginx-demo")
+	err := writeOutput(outPath, "tskey-test123", Hostname("nginx-demo"))
 	if err != nil {
 		t.Fatalf("writeOutput error: %v", err)
 	}
-	defer os.Remove(outPath)
+	defer os.Remove(string(outPath))
 
-	data, err := os.ReadFile(outPath)
+	data, err := os.ReadFile(string(outPath))
 	if err != nil {
 		t.Fatalf("reading output: %v", err)
 	}
@@ -165,22 +165,22 @@ func TestWriteOutput(t *testing.T) {
 		t.Error("output should contain TS_HOSTNAME")
 	}
 
-	info, _ := os.Stat(outPath)
+	info, _ := os.Stat(string(outPath))
 	if info.Mode().Perm() != 0600 {
 		t.Errorf("expected mode 0600, got %o", info.Mode().Perm())
 	}
 }
 
 func TestWriteOutputNoHostname(t *testing.T) {
-	outPath := fmt.Sprintf("/run/user/%d/ts-authkeys/test.env", os.Getuid())
+	outPath := OutputPath(fmt.Sprintf("/run/user/%d/ts-authkeys/test.env", os.Getuid()))
 
 	err := writeOutput(outPath, "tskey-test123", "")
 	if err != nil {
 		t.Fatalf("writeOutput error: %v", err)
 	}
-	defer os.Remove(outPath)
+	defer os.Remove(string(outPath))
 
-	data, err := os.ReadFile(outPath)
+	data, err := os.ReadFile(string(outPath))
 	if err != nil {
 		t.Fatalf("reading output: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestWriteOutputNoHostname(t *testing.T) {
 	}
 }
 
-func TestValidateHostname(t *testing.T) {
+func TestParseHostname(t *testing.T) {
 	tests := []struct {
 		name    string
 		host    string
@@ -214,10 +214,13 @@ func TestValidateHostname(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateHostname(tt.host)
+			got, err := parseHostname(tt.host)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
+				}
+				if string(got) != tt.host {
+					t.Errorf("got %q, want %q", got, tt.host)
 				}
 				return
 			}
@@ -231,7 +234,7 @@ func TestValidateHostname(t *testing.T) {
 	}
 }
 
-func TestValidateOutputPath(t *testing.T) {
+func TestParseOutputPath(t *testing.T) {
 	tests := []struct {
 		name    string
 		path    string
@@ -290,10 +293,13 @@ func TestValidateOutputPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateOutputPath(tt.path)
+			got, err := parseOutputPath(tt.path)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
+				}
+				if string(got) != filepath.Clean(tt.path) {
+					t.Errorf("got %q, want %q", got, filepath.Clean(tt.path))
 				}
 				return
 			}
@@ -645,7 +651,7 @@ func TestMintKeyCreateKeyReadError(t *testing.T) {
 		Tailnet:      "-",
 	}
 
-	_, err := mintKey(cfg, "tag:test", "test")
+	_, err := mintKey(cfg, "tag:test", Hostname("test"))
 	if err == nil {
 		t.Fatal("expected error from read failure")
 	}
@@ -677,7 +683,7 @@ func TestOAuthTokenTimeout(t *testing.T) {
 		Tailnet:      "-",
 	}
 
-	_, err := mintKey(cfg, "tag:test", "test")
+	_, err := mintKey(cfg, "tag:test", Hostname("test"))
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -722,7 +728,7 @@ func TestCreateKeyTimeout(t *testing.T) {
 		Tailnet:      "-",
 	}
 
-	_, err := mintKey(cfg, "tag:test", "test")
+	_, err := mintKey(cfg, "tag:test", Hostname("test"))
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
