@@ -9,7 +9,7 @@ A small Go CLI that mints short-lived [Tailscale](https://tailscale.com) auth ke
 3. Creates an ephemeral device auth key scoped to a tag
 4. Writes an env file containing `TS_AUTHKEY` and (optionally) `TS_HOSTNAME`
 
-The output env file is loaded by the container runtime. The container's network tool (e.g. [ts4nsnet](https://github.com/engie/ts4nsnet)) reads `TS_AUTHKEY` to authenticate with Tailscale and `TS_HOSTNAME` to register the node name on the tailnet.
+The output env file is loaded by the container runtime. The container's network tool (e.g. [netavark-tailscale-plugin](https://github.com/engie/netavark-tailscale-plugin)) reads `TS_AUTHKEY` to authenticate with Tailscale and `TS_HOSTNAME` to register the node name on the tailnet.
 
 ## Build
 
@@ -53,7 +53,7 @@ TS_HOSTNAME=myapp
 
 | Variable | Description |
 |----------|-------------|
-| `TS_AUTHKEY` | Ephemeral Tailscale auth key. Consumed by `tailscale up --authkey` or a tsnet-based tool like [ts4nsnet](https://github.com/engie/ts4nsnet) to join the tailnet. Single-use by default. |
+| `TS_AUTHKEY` | Ephemeral Tailscale auth key. Consumed by `tailscale up --authkey` or a tsnet-based tool like [netavark-tailscale-plugin](https://github.com/engie/netavark-tailscale-plugin) to join the tailnet. Single-use by default. |
 | `TS_HOSTNAME` | The hostname the device registers under on the tailnet (e.g. `myapp` becomes `myapp.tailnet-name.ts.net`). Only written when `-hostname` is provided. |
 
 ### Config file
