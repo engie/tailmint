@@ -67,6 +67,12 @@ var (
 	createKeyURL  = func(tailnet string) string {
 		return fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/keys", tailnet)
 	}
+	devicesURL = func(tailnet string) string {
+		return fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/devices", tailnet)
+	}
+	deleteDeviceURL = func(id string) string {
+		return fmt.Sprintf("https://api.tailscale.com/api/v2/device/%s", id)
+	}
 	httpClient   = &http.Client{Timeout: 30 * time.Second}
 	sysSetuid    = syscall.Setuid
 	sysSetgid    = syscall.Setgid
@@ -74,6 +80,16 @@ var (
 	osGetuid     = os.Getuid
 	userLookupId = user.LookupId
 )
+
+type devicesResponse struct {
+	Devices []deviceInfo `json:"devices"`
+}
+
+type deviceInfo struct {
+	ID       string `json:"id"`
+	Hostname string `json:"hostname"`
+	Name     string `json:"name"`
+}
 
 func main() {
 	configFile := flag.String("config", "/etc/tailscale/oauth.env", "Path to OAuth config env file")
@@ -114,7 +130,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	authKey, err := mintKey(cfg, *tag, host)
+	accessToken, err := getAccessToken(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if host != "" {
+		if err := cleanupStaleDevices(accessToken, cfg.Tailnet, host); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: device cleanup failed: %v\n", err)
+			// Continue — cleanup failure should not block container start.
+		}
+	}
+
+	authKey, err := mintKeyWithToken(accessToken, cfg, *tag, host)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -247,13 +276,14 @@ func dropPrivileges() error {
 }
 
 func mintKey(cfg config, tag string, hostname Hostname) (string, error) {
-	// Step 1: Get OAuth access token
 	accessToken, err := getAccessToken(cfg)
 	if err != nil {
 		return "", fmt.Errorf("getting access token: %w", err)
 	}
+	return mintKeyWithToken(accessToken, cfg, tag, hostname)
+}
 
-	// Step 2: Create auth key
+func mintKeyWithToken(accessToken string, cfg config, tag string, hostname Hostname) (string, error) {
 	desc := "minted-by-quadlet-deploy"
 	if hostname != "" {
 		desc = string(hostname)
@@ -309,6 +339,58 @@ func mintKey(cfg config, tag string, hostname Hostname) (string, error) {
 	}
 
 	return keyResp.Key, nil
+}
+
+// cleanupStaleDevices deletes any existing devices with the given hostname.
+// This runs before minting a new auth key, so any device with the same hostname
+// is from a previous container incarnation and is safe to remove.
+func cleanupStaleDevices(accessToken, tailnet string, hostname Hostname) error {
+	req, err := http.NewRequest("GET", devicesURL(tailnet), nil)
+	if err != nil {
+		return fmt.Errorf("creating devices request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("listing devices: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("devices API returned %d: %s", resp.StatusCode, body)
+	}
+	if err != nil {
+		return fmt.Errorf("reading devices response: %w", err)
+	}
+
+	var devResp devicesResponse
+	if err := json.Unmarshal(body, &devResp); err != nil {
+		return fmt.Errorf("parsing devices response: %w", err)
+	}
+
+	for _, dev := range devResp.Devices {
+		if dev.Hostname != string(hostname) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "removing stale device %s (%s)\n", dev.Name, dev.ID)
+		delReq, err := http.NewRequest("DELETE", deleteDeviceURL(dev.ID), nil)
+		if err != nil {
+			return fmt.Errorf("creating delete request for %s: %w", dev.ID, err)
+		}
+		delReq.Header.Set("Authorization", "Bearer "+accessToken)
+		delResp, err := httpClient.Do(delReq)
+		if err != nil {
+			return fmt.Errorf("deleting device %s: %w", dev.ID, err)
+		}
+		delResp.Body.Close()
+		if delResp.StatusCode != http.StatusOK {
+			return fmt.Errorf("delete device %s returned %d", dev.ID, delResp.StatusCode)
+		}
+	}
+
+	return nil
 }
 
 func getAccessToken(cfg config) (string, error) {

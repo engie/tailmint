@@ -586,6 +586,123 @@ func TestDropPrivilegesRootWithoutSudo(t *testing.T) {
 	}
 }
 
+func TestCleanupStaleDevicesDeletesMatchingHostname(t *testing.T) {
+	var deletedIDs []string
+	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			json.NewEncoder(w).Encode(devicesResponse{
+				Devices: []deviceInfo{
+					{ID: "dev-1", Hostname: "nginx-demo", Name: "nginx-demo.tail1234.ts.net"},
+					{ID: "dev-2", Hostname: "other-host", Name: "other-host.tail1234.ts.net"},
+					{ID: "dev-3", Hostname: "nginx-demo", Name: "nginx-demo-1.tail1234.ts.net"},
+				},
+			})
+			return
+		}
+		if r.Method == "DELETE" {
+			// Extract device ID from URL path
+			parts := strings.Split(r.URL.Path, "/")
+			deletedIDs = append(deletedIDs, parts[len(parts)-1])
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		t.Errorf("unexpected method: %s", r.Method)
+	}))
+	defer devServer.Close()
+
+	origDevicesURL := devicesURL
+	origDeleteURL := deleteDeviceURL
+	devicesURL = func(tailnet string) string { return devServer.URL }
+	deleteDeviceURL = func(id string) string { return devServer.URL + "/" + id }
+	defer func() {
+		devicesURL = origDevicesURL
+		deleteDeviceURL = origDeleteURL
+	}()
+
+	err := cleanupStaleDevices("test-token", "-", "nginx-demo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deletedIDs) != 2 {
+		t.Fatalf("expected 2 deletions, got %d: %v", len(deletedIDs), deletedIDs)
+	}
+	if deletedIDs[0] != "dev-1" || deletedIDs[1] != "dev-3" {
+		t.Errorf("unexpected deleted IDs: %v", deletedIDs)
+	}
+}
+
+func TestCleanupStaleDevicesNoMatches(t *testing.T) {
+	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(devicesResponse{
+			Devices: []deviceInfo{
+				{ID: "dev-1", Hostname: "other-host", Name: "other-host.tail1234.ts.net"},
+			},
+		})
+	}))
+	defer devServer.Close()
+
+	origDevicesURL := devicesURL
+	devicesURL = func(tailnet string) string { return devServer.URL }
+	defer func() { devicesURL = origDevicesURL }()
+
+	err := cleanupStaleDevices("test-token", "-", "nginx-demo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCleanupStaleDevicesAPIError(t *testing.T) {
+	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"message":"forbidden"}`))
+	}))
+	defer devServer.Close()
+
+	origDevicesURL := devicesURL
+	devicesURL = func(tailnet string) string { return devServer.URL }
+	defer func() { devicesURL = origDevicesURL }()
+
+	err := cleanupStaleDevices("bad-token", "-", "nginx-demo")
+	if err == nil {
+		t.Fatal("expected error for API failure")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should mention 403: %v", err)
+	}
+}
+
+func TestCleanupStaleDevicesDeleteError(t *testing.T) {
+	devServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			json.NewEncoder(w).Encode(devicesResponse{
+				Devices: []deviceInfo{
+					{ID: "dev-1", Hostname: "nginx-demo", Name: "nginx-demo.tail1234.ts.net"},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer devServer.Close()
+
+	origDevicesURL := devicesURL
+	origDeleteURL := deleteDeviceURL
+	devicesURL = func(tailnet string) string { return devServer.URL }
+	deleteDeviceURL = func(id string) string { return devServer.URL + "/" + id }
+	defer func() {
+		devicesURL = origDevicesURL
+		deleteDeviceURL = origDeleteURL
+	}()
+
+	err := cleanupStaleDevices("test-token", "-", "nginx-demo")
+	if err == nil {
+		t.Fatal("expected error for delete failure")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should mention 500: %v", err)
+	}
+}
+
 func TestGetAccessTokenReadError(t *testing.T) {
 	// Server claims a large body via Content-Length but sends nothing, causing io.ReadAll to fail
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
